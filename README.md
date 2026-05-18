@@ -8,8 +8,9 @@ This is a Next.js app. Vercel should use the Next.js framework preset and the de
 Required environment variables:
 
 ```text
-OPENAI_API_KEY=your_openai_api_key
-OPENAI_MODEL=gpt-5-mini
+OPENAI_API_KEY=your_gateway_token
+OPENAI_BASE_URL=https://api.gptoai.top
+OPENAI_MODEL=your_gateway_model_name
 ```
 
-`OPENAI_MODEL` is optional. If it is not set, the app uses `gpt-5-mini`.
+`OPENAI_API_KEY` should be the relay/gateway token value only, without the `Bearer ` prefix. `OPENAI_BASE_URL` defaults to `https://api.gptoai.top` if omitted. `OPENAI_MODEL` should match a model name supported by the relay service.

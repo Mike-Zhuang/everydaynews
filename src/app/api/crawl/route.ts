@@ -1,4 +1,3 @@
-import OpenAI from "openai";
 import * as cheerio from "cheerio";
 import { NextResponse } from "next/server";
 import { MEDIA_SOURCES } from "@/lib/mediaSources";
@@ -27,7 +26,8 @@ type OpenAIArticle = {
 const REQUEST_TIMEOUT_MS = 10000;
 const MAX_LINKS_PER_SOURCE = 8;
 const MAX_CANDIDATES_FOR_OPENAI = 80;
-const DEFAULT_OPENAI_MODEL = "gpt-5-mini";
+const DEFAULT_OPENAI_BASE_URL = "https://api.gptoai.top";
+const DEFAULT_OPENAI_MODEL = "gpt-4o-mini";
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36";
 
@@ -245,14 +245,14 @@ async function summarizeWithOpenAI(candidates: CandidateArticle[], keywords: str
     throw new Error("Missing OPENAI_API_KEY. Add it to .env.local before crawling.");
   }
 
-  const client = new OpenAI({ apiKey });
+  const baseUrl = (process.env.OPENAI_BASE_URL?.trim() || DEFAULT_OPENAI_BASE_URL).replace(/\/$/, "");
   const model = process.env.OPENAI_MODEL?.trim() || DEFAULT_OPENAI_MODEL;
   const prompt = `
 你是中文新闻编辑。请从候选新闻中筛选和这些关键词/主题相关的内容：${keywords.join("、")}。
 只保留半导体、机器人、人工智能、中国宏观经济、以及与中国有关的地缘新闻。
 每条摘要用中文，2-4 个要点句，避免营销话术。
 如果多篇文章报道同一事件，给它们完全相同的 canonicalKey。
-只返回符合 schema 的 JSON，不要返回解释文字。数组元素格式：
+只返回 JSON 数组，不要返回解释文字。数组元素格式：
 {
   "title": "标题",
   "date": "YYYY-MM-DD",
@@ -274,42 +274,40 @@ ${JSON.stringify(
 )}
 `;
 
-  const response = await client.responses.create({
-    model,
-    input: prompt,
-    text: {
-      format: {
-        type: "json_schema",
-        name: "news_digest_articles",
-        strict: true,
-        schema: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            articles: {
-              type: "array",
-              items: {
-                type: "object",
-                additionalProperties: false,
-                properties: {
-                  title: { type: "string" },
-                  date: { type: "string" },
-                  summary: { type: "string" },
-                  source: { type: "string" },
-                  url: { type: "string" },
-                  canonicalKey: { type: "string" }
-                },
-                required: ["title", "date", "summary", "source", "url", "canonicalKey"]
-              }
-            }
-          },
-          required: ["articles"]
+  const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "User-Agent": "everydaynews/1.0"
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        {
+          role: "system",
+          content: "You are a precise Chinese news editor. Return valid JSON only."
+        },
+        {
+          role: "user",
+          content: prompt
         }
-      }
-    }
+      ]
+    })
   });
 
-  return parseOpenAIJson(response.output_text ?? "");
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data?.error?.message ?? `OpenAI-compatible API request failed: ${response.status}`);
+  }
+
+  const text = data?.choices?.[0]?.message?.content;
+  if (typeof text !== "string") {
+    throw new Error("OpenAI-compatible API returned an empty response.");
+  }
+
+  return parseOpenAIJson(text);
 }
 
 export async function POST(request: Request) {
