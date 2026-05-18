@@ -23,9 +23,11 @@ type OpenAIArticle = {
   canonicalKey: string;
 };
 
-const REQUEST_TIMEOUT_MS = 10000;
-const MAX_LINKS_PER_SOURCE = 8;
-const MAX_CANDIDATES_FOR_OPENAI = 80;
+const REQUEST_TIMEOUT_MS = 3500;
+const MAX_SOURCES_PER_RUN = 18;
+const MAX_LINKS_PER_SOURCE = 3;
+const MAX_ARTICLE_LINKS_PER_RUN = 36;
+const MAX_CANDIDATES_FOR_OPENAI = 24;
 const DEFAULT_OPENAI_BASE_URL = "https://api.gptoai.top";
 const DEFAULT_OPENAI_MODEL = "gpt-4o-mini";
 const USER_AGENT =
@@ -177,7 +179,7 @@ async function mapConcurrent<T, R>(
 }
 
 async function collectCandidates(validDates: Set<string>) {
-  const sourcePages = await mapConcurrent(MEDIA_SOURCES, 6, async (source) => {
+  const sourcePages = await mapConcurrent(MEDIA_SOURCES.slice(0, MAX_SOURCES_PER_RUN), 8, async (source) => {
     const html = await fetchHtml(source.url);
     if (!html) return [];
     return extractLinks(html, source.url).map((link) => ({ ...link, source: source.name }));
@@ -188,7 +190,7 @@ async function collectCandidates(validDates: Set<string>) {
     if (!uniqueLinks.has(link.url)) uniqueLinks.set(link.url, link);
   });
 
-  const articles = await mapConcurrent(Array.from(uniqueLinks.values()), 8, async (link) => {
+  const articles = await mapConcurrent(Array.from(uniqueLinks.values()).slice(0, MAX_ARTICLE_LINKS_PER_RUN), 10, async (link) => {
     const html = await fetchHtml(link.url);
     if (!html) return null;
     const article = extractArticle(html, link.title, link.url, link.source);

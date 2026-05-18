@@ -20,6 +20,17 @@ function formatTime(value: string) {
   }).format(new Date(value));
 }
 
+async function readJsonResponse(response: Response) {
+  const text = await response.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    const clean = text.replace(/\s+/g, " ").trim();
+    const message = clean || `服务器返回了非 JSON 响应，HTTP ${response.status}`;
+    throw new Error(message.length > 400 ? `${message.slice(0, 400)}...` : message);
+  }
+}
+
 function Card({ card }: { card: NewsCard }) {
   const [copied, setCopied] = useState<"url" | "body" | null>(null);
   const sourceText = card.sources.map((source) => source.source).join("、");
@@ -134,7 +145,7 @@ export default function Home() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ keywords })
       });
-      const data = await response.json();
+      const data = await readJsonResponse(response);
       if (!response.ok) throw new Error(data.error ?? "抓取失败");
 
       setResult(data);
