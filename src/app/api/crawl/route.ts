@@ -202,10 +202,38 @@ async function collectCandidates(validDates: Set<string>) {
 function parseOpenAIJson(text: string) {
   const fenced = text.match(/```json\s*([\s\S]*?)```/i);
   const body = fenced?.[1] ?? text;
-  const parsed = JSON.parse(body);
-  if (Array.isArray(parsed)) return parsed as OpenAIArticle[];
-  if (Array.isArray(parsed.articles)) return parsed.articles as OpenAIArticle[];
-  return [];
+  const firstArrayStart = body.indexOf("[");
+  const firstObjectStart = body.indexOf("{");
+  const lastArrayEnd = body.lastIndexOf("]");
+  const lastObjectEnd = body.lastIndexOf("}");
+  const jsonText =
+    firstArrayStart !== -1 && lastArrayEnd !== -1
+      ? body.slice(firstArrayStart, lastArrayEnd + 1)
+      : firstObjectStart !== -1 && lastObjectEnd !== -1
+        ? body.slice(firstObjectStart, lastObjectEnd + 1)
+        : body;
+
+  try {
+    const parsed = JSON.parse(jsonText);
+    if (Array.isArray(parsed)) return parsed as OpenAIArticle[];
+    if (Array.isArray(parsed.articles)) return parsed.articles as OpenAIArticle[];
+    return [];
+  } catch {
+    throw new Error(`Model did not return valid JSON: ${clipText(body)}`);
+  }
+}
+
+function clipText(value: string, maxLength = 400) {
+  const clean = value.replace(/\s+/g, " ").trim();
+  return clean.length > maxLength ? `${clean.slice(0, maxLength)}...` : clean;
+}
+
+function parseMaybeJson(text: string) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
 }
 
 function mergeArticles(articles: OpenAIArticle[]): NewsCard[] {
@@ -252,7 +280,7 @@ async function summarizeWithOpenAI(candidates: CandidateArticle[], keywords: str
 只保留半导体、机器人、人工智能、中国宏观经济、以及与中国有关的地缘新闻。
 每条摘要用中文，2-4 个要点句，避免营销话术。
 如果多篇文章报道同一事件，给它们完全相同的 canonicalKey。
-只返回 JSON 数组，不要返回解释文字。数组元素格式：
+只返回 JSON 数组，不要返回解释文字，不要 Markdown 代码块。数组元素格式：
 {
   "title": "标题",
   "date": "YYYY-MM-DD",
@@ -297,9 +325,18 @@ ${JSON.stringify(
     })
   });
 
-  const data = await response.json();
+  const rawResponse = await response.text();
+  const data = parseMaybeJson(rawResponse);
   if (!response.ok) {
-    throw new Error(data?.error?.message ?? `OpenAI-compatible API request failed: ${response.status}`);
+    const message =
+      data?.error?.message ??
+      data?.message ??
+      clipText(rawResponse) ??
+      `OpenAI-compatible API request failed: ${response.status}`;
+    throw new Error(`OpenAI-compatible API request failed: ${message}`);
+  }
+  if (!data) {
+    throw new Error(`OpenAI-compatible API returned non-JSON response: ${clipText(rawResponse)}`);
   }
 
   const text = data?.choices?.[0]?.message?.content;
