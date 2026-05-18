@@ -1,4 +1,4 @@
-import { GoogleGenAI } from "@google/genai";
+import OpenAI from "openai";
 import * as cheerio from "cheerio";
 import { NextResponse } from "next/server";
 import { MEDIA_SOURCES } from "@/lib/mediaSources";
@@ -15,7 +15,7 @@ type CandidateArticle = {
   text: string;
 };
 
-type GeminiArticle = {
+type OpenAIArticle = {
   title: string;
   date: string;
   summary: string;
@@ -26,7 +26,8 @@ type GeminiArticle = {
 
 const REQUEST_TIMEOUT_MS = 10000;
 const MAX_LINKS_PER_SOURCE = 8;
-const MAX_CANDIDATES_FOR_GEMINI = 80;
+const MAX_CANDIDATES_FOR_OPENAI = 80;
+const DEFAULT_OPENAI_MODEL = "gpt-5-mini";
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36";
 
@@ -195,19 +196,19 @@ async function collectCandidates(validDates: Set<string>) {
     return article;
   });
 
-  return articles.filter(Boolean).slice(0, MAX_CANDIDATES_FOR_GEMINI) as CandidateArticle[];
+  return articles.filter(Boolean).slice(0, MAX_CANDIDATES_FOR_OPENAI) as CandidateArticle[];
 }
 
-function parseGeminiJson(text: string) {
+function parseOpenAIJson(text: string) {
   const fenced = text.match(/```json\s*([\s\S]*?)```/i);
   const body = fenced?.[1] ?? text;
-  const start = body.indexOf("[");
-  const end = body.lastIndexOf("]");
-  if (start === -1 || end === -1) return [];
-  return JSON.parse(body.slice(start, end + 1)) as GeminiArticle[];
+  const parsed = JSON.parse(body);
+  if (Array.isArray(parsed)) return parsed as OpenAIArticle[];
+  if (Array.isArray(parsed.articles)) return parsed.articles as OpenAIArticle[];
+  return [];
 }
 
-function mergeArticles(articles: GeminiArticle[]): NewsCard[] {
+function mergeArticles(articles: OpenAIArticle[]): NewsCard[] {
   const groups = new Map<string, NewsCard>();
 
   for (const article of articles) {
@@ -236,21 +237,22 @@ function mergeArticles(articles: GeminiArticle[]): NewsCard[] {
   return Array.from(groups.values()).sort((a, b) => b.date.localeCompare(a.date));
 }
 
-async function summarizeWithGemini(candidates: CandidateArticle[], keywords: string[]) {
+async function summarizeWithOpenAI(candidates: CandidateArticle[], keywords: string[]) {
   if (candidates.length === 0) return [];
 
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.OPENAI_API_KEY?.trim();
   if (!apiKey) {
-    throw new Error("Missing GEMINI_API_KEY. Add it to .env.local before crawling.");
+    throw new Error("Missing OPENAI_API_KEY. Add it to .env.local before crawling.");
   }
 
-  const ai = new GoogleGenAI({ apiKey });
+  const client = new OpenAI({ apiKey });
+  const model = process.env.OPENAI_MODEL?.trim() || DEFAULT_OPENAI_MODEL;
   const prompt = `
 你是中文新闻编辑。请从候选新闻中筛选和这些关键词/主题相关的内容：${keywords.join("、")}。
 只保留半导体、机器人、人工智能、中国宏观经济、以及与中国有关的地缘新闻。
 每条摘要用中文，2-4 个要点句，避免营销话术。
 如果多篇文章报道同一事件，给它们完全相同的 canonicalKey。
-只返回 JSON 数组，不要返回解释文字。数组元素格式：
+只返回符合 schema 的 JSON，不要返回解释文字。数组元素格式：
 {
   "title": "标题",
   "date": "YYYY-MM-DD",
@@ -272,12 +274,42 @@ ${JSON.stringify(
 )}
 `;
 
-  const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
-    contents: prompt
+  const response = await client.responses.create({
+    model,
+    input: prompt,
+    text: {
+      format: {
+        type: "json_schema",
+        name: "news_digest_articles",
+        strict: true,
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            articles: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  title: { type: "string" },
+                  date: { type: "string" },
+                  summary: { type: "string" },
+                  source: { type: "string" },
+                  url: { type: "string" },
+                  canonicalKey: { type: "string" }
+                },
+                required: ["title", "date", "summary", "source", "url", "canonicalKey"]
+              }
+            }
+          },
+          required: ["articles"]
+        }
+      }
+    }
   });
 
-  return parseGeminiJson(response.text ?? "");
+  return parseOpenAIJson(response.output_text ?? "");
 }
 
 export async function POST(request: Request) {
@@ -286,7 +318,7 @@ export async function POST(request: Request) {
     const keywords = (body.keywords ?? []).map((item) => item.trim()).filter(Boolean);
     const window = currentWindow();
     const candidates = await collectCandidates(window.valid);
-    const filtered = await summarizeWithGemini(candidates, keywords);
+    const filtered = await summarizeWithOpenAI(candidates, keywords);
     const cards = mergeArticles(filtered);
 
     const payload: CrawlResponse = {

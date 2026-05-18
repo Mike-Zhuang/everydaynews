@@ -5,8 +5,11 @@ Crawl news on the topics of embodied AI, clips, geopolitics, robotics in China b
 
 This is a Next.js app. Vercel should use the Next.js framework preset and the default output directory. Do not set the Output Directory to `public`; `public` is only for static assets and is not the build output for this app.
 
-Required environment variable:
+Required environment variables:
 
 ```text
-GEMINI_API_KEY=your_gemini_api_key
+OPENAI_API_KEY=your_openai_api_key
+OPENAI_MODEL=gpt-5-mini
 ```
+
+`OPENAI_MODEL` is optional. If it is not set, the app uses `gpt-5-mini`.
