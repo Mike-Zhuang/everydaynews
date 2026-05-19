@@ -3,10 +3,14 @@
 import { Check, Clock3, Copy, Moon, Plus, Sun, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { DEFAULT_KEYWORDS } from "@/lib/mediaSources";
-import type { CrawlResponse, NewsCard } from "@/lib/types";
+import type { CandidateArticle, CrawlResponse, NewsCard } from "@/lib/types";
 
 type HistoryItem = CrawlResponse & {
   id: string;
+};
+
+type SearchResponse = CrawlResponse & {
+  candidates: CandidateArticle[];
 };
 
 const HISTORY_KEY = "china-news-digest-history";
@@ -29,6 +33,13 @@ async function readJsonResponse(response: Response) {
     const message = clean || `服务器返回了非 JSON 响应，HTTP ${response.status}`;
     throw new Error(message.length > 400 ? `${message.slice(0, 400)}...` : message);
   }
+}
+
+function responseError(data: unknown, fallback: string) {
+  if (data && typeof data === "object" && "error" in data && typeof data.error === "string") {
+    return data.error;
+  }
+  return fallback;
 }
 
 function Card({ card }: { card: NewsCard }) {
@@ -98,15 +109,23 @@ export default function Home() {
   const [newKeyword, setNewKeyword] = useState("");
   const [adding, setAdding] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [stage, setStage] = useState<"idle" | "searching" | "summarizing">("idle");
   const [error, setError] = useState("");
   const [result, setResult] = useState<CrawlResponse | null>(null);
+  const [previewCards, setPreviewCards] = useState<NewsCard[]>([]);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [view, setView] = useState<"home" | "history">("home");
   const [dark, setDark] = useState(false);
 
   useEffect(() => {
     const stored = localStorage.getItem(HISTORY_KEY);
-    if (stored) setHistory(JSON.parse(stored));
+    if (stored) {
+      try {
+        setHistory(JSON.parse(stored));
+      } catch {
+        localStorage.removeItem(HISTORY_KEY);
+      }
+    }
     setDark(window.matchMedia("(prefers-color-scheme: dark)").matches);
   }, []);
 
@@ -138,25 +157,50 @@ export default function Home() {
 
   async function startCrawl() {
     setLoading(true);
+    setStage("searching");
     setError("");
+    setResult(null);
+    setPreviewCards([]);
     try {
-      const response = await fetch("/api/crawl", {
+      const searchResponse = await fetch("/api/crawl/search", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ keywords })
       });
-      const data = await readJsonResponse(response);
-      if (!response.ok) throw new Error(data.error ?? "抓取失败");
+      const searchData = (await readJsonResponse(searchResponse)) as SearchResponse | { error?: string };
+      if (!searchResponse.ok) throw new Error(responseError(searchData, "网页爬取失败"));
 
-      setResult(data);
-      persistHistory([{ ...data, id: crypto.randomUUID() }, ...history].slice(0, 30));
+      const found = searchData as SearchResponse;
+      setPreviewCards(found.cards);
+      setStage("summarizing");
+
+      const summarizeResponse = await fetch("/api/crawl/summarize", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          keywords,
+          candidates: found.candidates,
+          window: found.window
+        })
+      });
+      const summarizeData = (await readJsonResponse(summarizeResponse)) as CrawlResponse | { error?: string };
+      if (!summarizeResponse.ok) throw new Error(responseError(summarizeData, "内容总结失败"));
+
+      const nextResult = summarizeData as CrawlResponse;
+      setResult(nextResult);
+      persistHistory([{ ...nextResult, id: crypto.randomUUID() }, ...history].slice(0, 30));
       setView("home");
     } catch (err) {
       setError(err instanceof Error ? err.message : "抓取失败");
     } finally {
       setLoading(false);
+      setStage("idle");
     }
   }
+
+  const visibleCards = result?.cards ?? previewCards;
+  const buttonText =
+    stage === "searching" ? "爬取网页中..." : stage === "summarizing" ? "总结内容中..." : "开始";
 
   return (
     <main className="app-shell">
@@ -213,17 +257,23 @@ export default function Home() {
               )}
             </div>
             <button className="start-button" onClick={startCrawl} disabled={loading || keywords.length === 0}>
-              {loading ? "抓取中..." : "开始"}
+              {buttonText}
             </button>
             {error ? <p className="error-text">{error}</p> : null}
+            {stage === "searching" ? <p className="meta-text">正在抓取媒体网页并提取候选文章。</p> : null}
+            {stage === "summarizing" ? (
+              <p className="meta-text">已抓取 {previewCards.length} 张候选卡片，正在调用模型总结。</p>
+            ) : null}
             {result ? (
               <p className="meta-text">
                 已生成 {result.cards.length} 张卡片，范围：{result.window.yesterday} 至 {result.window.today}
               </p>
+            ) : !result && previewCards.length > 0 ? (
+              <p className="meta-text">已抓取 {previewCards.length} 张候选卡片，等待总结完成。</p>
             ) : null}
           </section>
 
-          <CardGrid cards={result?.cards ?? []} />
+          <CardGrid cards={visibleCards} />
         </>
       ) : (
         <section className="history-view">

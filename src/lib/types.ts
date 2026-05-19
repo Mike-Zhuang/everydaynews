@@ -9,6 +9,14 @@ export type NewsSourceHit = {
   url: string;
 };
 
+export type CandidateArticle = {
+  title: string;
+  url: string;
+  source: string;
+  date: string;
+  text: string;
+};
+
 export type NewsCard = {
   id: string;
   title: string;

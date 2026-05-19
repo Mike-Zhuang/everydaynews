@@ -1,36 +1,34 @@
 import { NextResponse } from "next/server";
-import {
-  collectCandidates,
-  currentWindow,
-  mergeArticles,
-  summarizeWithOpenAI
-} from "@/lib/crawlWorkflow";
-import type { CrawlResponse } from "@/lib/types";
+import { currentWindow, mergeArticles, summarizeWithOpenAI } from "@/lib/crawlWorkflow";
+import type { CandidateArticle, CrawlResponse } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
 export async function POST(request: Request) {
   try {
-    const body = (await request.json()) as { keywords?: string[] };
+    const body = (await request.json()) as {
+      keywords?: string[];
+      candidates?: CandidateArticle[];
+      window?: CrawlResponse["window"];
+    };
     const keywords = (body.keywords ?? []).map((item) => item.trim()).filter(Boolean);
-    const window = currentWindow();
-    const candidates = await collectCandidates(window.valid);
+    const candidates = body.candidates ?? [];
+    const window = body.window ?? currentWindow();
+
     const filtered = await summarizeWithOpenAI(candidates, keywords);
     const cards = mergeArticles(filtered);
 
-    const payload: CrawlResponse = {
+    return NextResponse.json({
       generatedAt: new Date().toISOString(),
       window: {
         today: window.today,
         yesterday: window.yesterday
       },
       cards
-    };
-
-    return NextResponse.json(payload);
+    });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Crawl failed.";
+    const message = error instanceof Error ? error.message : "Summarize failed.";
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
