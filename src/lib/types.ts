@@ -19,6 +19,7 @@ export type CandidateArticle = {
 
 export type NewsCard = {
   id: string;
+  section?: "产业动向" | "宏观地缘";
   title: string;
   date: string;
   summary: string;

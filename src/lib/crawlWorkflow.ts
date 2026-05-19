@@ -3,6 +3,7 @@ import { MEDIA_SOURCES } from "@/lib/mediaSources";
 import type { CandidateArticle, NewsCard } from "@/lib/types";
 
 type OpenAIArticle = {
+  section?: "产业动向" | "宏观地缘";
   title: string;
   date: string;
   summary: string;
@@ -12,14 +13,9 @@ type OpenAIArticle = {
 };
 
 const REQUEST_TIMEOUT_MS = 3500;
-const MAX_SOURCES_PER_RUN = 28;
 const MAX_LINKS_PER_SOURCE = 4;
-const MAX_TOPICS_PER_RUN = 3;
-const MAX_HOST_GROUPS_PER_RUN = 5;
-const MAX_RESULTS_PER_ENGINE = 5;
-const MAX_ARTICLE_LINKS_PER_RUN = 30;
+const MAX_ARTICLES_PER_SOURCE = 3;
 const MAX_CANDIDATES_FOR_OPENAI = 24;
-const SITE_FILTERS_PER_QUERY = 4;
 const DEFAULT_OPENAI_BASE_URL = "https://api.gptoai.top";
 const DEFAULT_OPENAI_MODEL = "gpt-5.4";
 const USER_AGENT =
@@ -111,21 +107,6 @@ function normalizeUrl(href: string, baseUrl: string) {
   }
 }
 
-function cleanSearchUrl(href: string, baseUrl: string) {
-  const url = normalizeUrl(href, baseUrl);
-  if (!url) return null;
-
-  const parsed = new URL(url);
-  const duckTarget = parsed.searchParams.get("uddg");
-  if (duckTarget) return normalizeUrl(duckTarget, baseUrl);
-
-  if (parsed.hostname.includes("bing.com") && parsed.pathname === "/ck/a") {
-    return null;
-  }
-
-  return url;
-}
-
 function isUsableArticleUrl(url: string) {
   try {
     const parsed = new URL(url);
@@ -147,33 +128,6 @@ function sourceNameForUrl(url: string, fallback: string) {
   } catch {
     return fallback;
   }
-}
-
-function extractSearchLinks(html: string, baseUrl: string, platform: string) {
-  const $ = cheerio.load(html);
-  const links: UnionSearchResult[] = [];
-  const seen = new Set<string>();
-  const selectors =
-    platform === "bing"
-      ? "li.b_algo h2 a[href]"
-      : platform === "duckduckgo"
-        ? ".result h2 a[href], .result__title a[href]"
-        : "a[href]";
-
-  $(selectors).each((_, element) => {
-    const href = $(element).attr("href");
-    const title = $(element).text().replace(/\s+/g, " ").trim();
-    if (!href || title.length < 6) return;
-    const url = cleanSearchUrl(href, baseUrl);
-    if (!url || seen.has(url) || !isUsableArticleUrl(url)) return;
-
-    const item = $(element).closest("li, .result, .b_algo, div");
-    const snippet = item.text().replace(/\s+/g, " ").trim().replace(title, "").slice(0, 260);
-    seen.add(url);
-    links.push({ title, url, snippet, platform });
-  });
-
-  return links.slice(0, MAX_RESULTS_PER_ENGINE);
 }
 
 function extractMediaPageLinks(html: string, baseUrl: string, source: string) {
@@ -262,104 +216,31 @@ async function mapConcurrent<T, R>(
 }
 
 export async function collectCandidates(validDates: Set<string>) {
-  const directResults = await crawlConfiguredMediaPages();
-  const searchResults = directResults.length >= 12
-    ? directResults
-    : [...directResults, ...(await unionSearch(Array.from(validDates)))];
-  const uniqueLinks = new Map<string, UnionSearchResult>();
-  searchResults.forEach((link) => {
-    if (!uniqueLinks.has(link.url)) uniqueLinks.set(link.url, link);
-  });
+  const candidates: CandidateArticle[] = [];
 
-  const articles = await mapConcurrent(Array.from(uniqueLinks.values()).slice(0, MAX_ARTICLE_LINKS_PER_RUN), 10, async (link) => {
+  for (const source of MEDIA_SOURCES) {
+    const articles = await collectCandidatesFromSource(source.url, source.name, validDates);
+    candidates.push(...articles);
+    if (candidates.length >= MAX_CANDIDATES_FOR_OPENAI) break;
+  }
+
+  return candidates.slice(0, MAX_CANDIDATES_FOR_OPENAI);
+}
+
+export async function collectCandidatesFromSource(sourceUrl: string, sourceName: string, validDates: Set<string>) {
+  const html = await fetchHtml(sourceUrl);
+  if (!html) return [];
+
+  const links = extractMediaPageLinks(html, sourceUrl, sourceName);
+  const articles = await mapConcurrent(links, 3, async (link) => {
     const html = await fetchHtml(link.url);
     if (!html) return null;
-    const article = extractArticle(html, link.title, link.url, sourceNameForUrl(link.url, `${link.platform} search`));
+    const article = extractArticle(html, link.title, link.url, sourceNameForUrl(link.url, sourceName));
     if (!article || !validDates.has(article.date)) return null;
     return article;
   });
 
-  return articles.filter(Boolean).slice(0, MAX_CANDIDATES_FOR_OPENAI) as CandidateArticle[];
-}
-
-async function crawlConfiguredMediaPages() {
-  const sourcePages = await mapConcurrent(MEDIA_SOURCES.slice(0, MAX_SOURCES_PER_RUN), 8, async (source) => {
-    const html = await fetchHtml(source.url);
-    if (!html) return [];
-    return extractMediaPageLinks(html, source.url, source.name);
-  });
-
-  return sourcePages.flat();
-}
-
-function buildUnionQueries(validDates: string[]) {
-  const topics = ["半导体", "机器人", "人工智能", "中国宏观经济", "中国 地缘政治"];
-  const dateTerms = validDates.join(" OR ");
-  const hostGroups: string[][] = [];
-  for (let index = 0; index < allowedSourceHosts.length; index += SITE_FILTERS_PER_QUERY) {
-    hostGroups.push(allowedSourceHosts.slice(index, index + SITE_FILTERS_PER_QUERY));
-  }
-
-  return topics.slice(0, MAX_TOPICS_PER_RUN).flatMap((topic) =>
-    hostGroups.slice(0, MAX_HOST_GROUPS_PER_RUN).map((hosts) => {
-      const siteFilters = hosts.map((host) => `site:${host}`).join(" OR ");
-      return `${topic} 中国 新闻 (${dateTerms}) (${siteFilters})`;
-    })
-  );
-}
-
-async function searchDuckDuckGo(query: string) {
-  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-  const html = await fetchHtml(url);
-  return html ? extractSearchLinks(html, url, "duckduckgo") : [];
-}
-
-async function searchBing(query: string) {
-  const url = `https://www.bing.com/search?q=${encodeURIComponent(query)}`;
-  const html = await fetchHtml(url);
-  return html ? extractSearchLinks(html, url, "bing") : [];
-}
-
-async function searchJina(query: string) {
-  try {
-    const response = await fetch(`https://s.jina.ai/?q=${encodeURIComponent(query)}`, {
-      headers: {
-        Accept: "application/json",
-        "X-Respond-With": "no-content",
-        "User-Agent": USER_AGENT
-      },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
-    });
-    if (!response.ok) return [];
-    const data = await response.json();
-    const items = Array.isArray(data?.data) ? data.data : [];
-    return items.slice(0, MAX_RESULTS_PER_ENGINE).flatMap((item: Record<string, unknown>) => {
-      const title = typeof item.title === "string" ? item.title : "";
-      const url = typeof item.url === "string" ? item.url : "";
-      const snippet = typeof item.description === "string" ? item.description : "";
-      return title && url && isUsableArticleUrl(url)
-        ? [{ title, url, snippet, platform: "jina" }]
-        : [];
-    });
-  } catch {
-    return [];
-  }
-}
-
-async function unionSearch(validDates: string[]) {
-  const queries = buildUnionQueries(validDates);
-  const batches = await Promise.all(
-    queries.map(async (query) => {
-      const results = await Promise.allSettled([
-        searchDuckDuckGo(query),
-        searchBing(query),
-        searchJina(query)
-      ]);
-      return results.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
-    })
-  );
-
-  return batches.flat();
+  return (articles.filter(Boolean) as CandidateArticle[]).slice(0, MAX_ARTICLES_PER_SOURCE);
 }
 
 export function candidatesToCards(candidates: CandidateArticle[]): NewsCard[] {
@@ -421,6 +302,7 @@ export function mergeArticles(articles: OpenAIArticle[]): NewsCard[] {
     if (!existing) {
       groups.set(key, {
         id: key.replace(/[^a-z0-9\u4e00-\u9fa5]+/gi, "-").slice(0, 80),
+        section: article.section,
         title: article.title,
         date: article.date,
         summary: article.summary,
@@ -451,11 +333,28 @@ export async function summarizeWithOpenAI(candidates: CandidateArticle[], keywor
   const model = process.env.OPENAI_MODEL?.trim() || DEFAULT_OPENAI_MODEL;
   const prompt = `
 你是中文新闻编辑。请从候选新闻中筛选和这些关键词/主题相关的内容：${keywords.join("、")}。
-只保留半导体、机器人、人工智能、中国宏观经济、以及与中国有关的地缘新闻。
-每条摘要用中文，2-4 个要点句，避免营销话术。
-如果多篇文章报道同一事件，给它们完全相同的 canonicalKey。
+请严格按照以下选题规则筛选：
+1. 优先选取官方机构、权威媒体及大型正规媒体的报道，不使用未经证实或来源不明的消息，尽可能不用证券网站。
+2. 文旅、医疗及地方相关事宜不选；涉及外国和台湾的内容尽量不选，除非与中国宏观经济、产业链或地缘关系直接相关。
+3. 避免日常外事活动和口号宣誓类内容，立场保持中立。地缘板块不选出访或外事接待内容。
+4. 每日报告的信息来源中必须尽量包含至少一条外媒报道。
+5. 不选尚未发生的事件，不得选择分析或评论文章；只选已经发生、有事实增量的报道。
+6. 宏观经济方面尽量选取一条涉房地产内容，最终落脚点必须是对我国宏观经济的影响。
+7. 外国企业或对中国产业动态无直接影响的不予选择。
+8. 地缘新闻必须包括中国和另外国家。国家优先级：美国、日本、俄罗斯、欧洲、印度；以中美关系为主，无合适新闻再选中日、欧洲、澳大利亚、印度。
+9. 每则新闻最好使用两条来源交叉印证；如果候选中有同一事件的多源报道，请合并为一则。
+10. 选题需体现产业发展的关键进展、技术迭代或商业模式重要变化，避免价值有限的日常信息；半导体等板块关注我国龙头企业进展。
+11. 宏观经济可选择荣鼎、摩根士丹利、高盛、达沃斯等国际知名智库、组织对我国宏观经济的分析或预测。
+
+输出模仿日报格式，分为“产业动向”和“宏观地缘”两组。每则新闻 summary 写成 3 个自然段：
+第一段：事实，含日期、主体、事件和关键数据；
+第二段：背景或原因；
+第三段：对我国产业、宏观经济或地缘格局的影响判断，保持中立。
+每则新闻尽量保留 2 条来源；如果只有 1 条可靠来源，也可以保留。
+如果多篇文章报道同一事件，给它们完全相同的 canonicalKey，并合并来源。
 只返回 JSON 数组，不要返回解释文字，不要 Markdown 代码块。数组元素格式：
 {
+  "section": "产业动向 或 宏观地缘",
   "title": "标题",
   "date": "YYYY-MM-DD",
   "summary": "内容要点概括",

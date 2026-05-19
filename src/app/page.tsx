@@ -2,7 +2,7 @@
 
 import { ArrowUpRight, Check, Clock3, Copy, Moon, Plus, Sun, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { DEFAULT_KEYWORDS } from "@/lib/mediaSources";
+import { DEFAULT_KEYWORDS, MEDIA_SOURCES } from "@/lib/mediaSources";
 import type { CandidateArticle, CrawlResponse, NewsCard } from "@/lib/types";
 
 type HistoryItem = CrawlResponse & {
@@ -105,6 +105,37 @@ function CardGrid({ cards, onDelete }: { cards: NewsCard[]; onDelete?: (card: Ne
     return <div className="empty-state">还没有新闻卡片。点击“开始”后会显示今天和昨天的相关内容。</div>;
   }
 
+  const hasSections = cards.some((card) => card.section);
+  if (hasSections) {
+    const industryCards = cards.filter((card) => (card.section ?? "产业动向") === "产业动向");
+    const macroCards = cards.filter((card) => card.section === "宏观地缘");
+
+    return (
+      <div className="report-sections">
+        {industryCards.length > 0 ? (
+          <section className="report-section">
+            <h2>产业动向</h2>
+            <div className="card-grid">
+              {industryCards.map((card) => (
+                <Card key={`${card.id}-${card.primaryUrl}`} card={card} onDelete={onDelete} />
+              ))}
+            </div>
+          </section>
+        ) : null}
+        {macroCards.length > 0 ? (
+          <section className="report-section">
+            <h2>宏观地缘</h2>
+            <div className="card-grid">
+              {macroCards.map((card) => (
+                <Card key={`${card.id}-${card.primaryUrl}`} card={card} onDelete={onDelete} />
+              ))}
+            </div>
+          </section>
+        ) : null}
+      </div>
+    );
+  }
+
   return (
     <section className="card-grid">
       {cards.map((card) => (
@@ -120,6 +151,8 @@ export default function Home() {
   const [adding, setAdding] = useState(false);
   const [loading, setLoading] = useState(false);
   const [stage, setStage] = useState<"idle" | "searching" | "summarizing">("idle");
+  const [currentSource, setCurrentSource] = useState("");
+  const [searchedSources, setSearchedSources] = useState(0);
   const [error, setError] = useState("");
   const [result, setResult] = useState<CrawlResponse | null>(null);
   const [previewCards, setPreviewCards] = useState<NewsCard[]>([]);
@@ -202,29 +235,46 @@ export default function Home() {
   async function startCrawl() {
     setLoading(true);
     setStage("searching");
+    setCurrentSource("");
+    setSearchedSources(0);
     setError("");
     setResult(null);
     setPreviewCards([]);
     try {
-      const searchResponse = await fetch("/api/crawl/search", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ keywords })
-      });
-      const searchData = (await readJsonResponse(searchResponse)) as SearchResponse | { error?: string };
-      if (!searchResponse.ok) throw new Error(responseError(searchData, "网页爬取失败"));
+      const allCandidates: CandidateArticle[] = [];
+      const allCards: NewsCard[] = [];
+      let crawlWindow: CrawlResponse["window"] | null = null;
 
-      const found = searchData as SearchResponse;
-      setPreviewCards(found.cards);
+      for (let index = 0; index < MEDIA_SOURCES.length; index += 1) {
+        const source = MEDIA_SOURCES[index];
+        setCurrentSource(source.name);
+        setSearchedSources(index + 1);
+
+        const searchResponse = await fetch("/api/crawl/search-source", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ index })
+        });
+        const searchData = (await readJsonResponse(searchResponse)) as SearchResponse | { error?: string };
+        if (!searchResponse.ok) throw new Error(responseError(searchData, `${source.name} 爬取失败`));
+
+        const found = searchData as SearchResponse;
+        crawlWindow = found.window;
+        allCandidates.push(...found.candidates);
+        allCards.push(...found.cards);
+        setPreviewCards([...allCards]);
+      }
+
       setStage("summarizing");
+      setCurrentSource("");
 
       const summarizeResponse = await fetch("/api/crawl/summarize", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           keywords,
-          candidates: found.candidates,
-          window: found.window
+          candidates: allCandidates.slice(0, 80),
+          window: crawlWindow
         })
       });
       const summarizeData = (await readJsonResponse(summarizeResponse)) as CrawlResponse | { error?: string };
@@ -239,6 +289,7 @@ export default function Home() {
     } finally {
       setLoading(false);
       setStage("idle");
+      setCurrentSource("");
     }
   }
 
@@ -304,7 +355,11 @@ export default function Home() {
               {buttonText}
             </button>
             {error ? <p className="error-text">{error}</p> : null}
-            {stage === "searching" ? <p className="meta-text">正在抓取媒体网页并提取候选文章。</p> : null}
+            {stage === "searching" ? (
+              <p className="meta-text">
+                正在逐网站查找：{currentSource || "准备中"}（{searchedSources}/{MEDIA_SOURCES.length}）
+              </p>
+            ) : null}
             {stage === "summarizing" ? (
               <p className="meta-text">已抓取 {previewCards.length} 张候选卡片，正在调用模型总结。</p>
             ) : null}
