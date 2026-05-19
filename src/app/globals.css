@@ -360,11 +360,19 @@ a {
   white-space: pre-line;
 }
 
-.source-list {
+.card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+  margin-top: 18px;
+}
+
+.source-list,
+.keyword-tags {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 18px;
 }
 
 .source-list a {
@@ -374,6 +382,21 @@ a {
   color: var(--accent);
   text-decoration: none;
   font-size: 13px;
+}
+
+.keyword-tags span {
+  padding: 7px 10px;
+  border: 1px solid rgba(20, 151, 117, 0.26);
+  border-radius: 999px;
+  background: rgba(20, 151, 117, 0.1);
+  color: #12745d;
+  font-size: 13px;
+}
+
+:root[data-theme="dark"] .keyword-tags span {
+  border-color: rgba(90, 220, 180, 0.28);
+  background: rgba(90, 220, 180, 0.12);
+  color: #7be0bd;
 }
 
 .empty-state {

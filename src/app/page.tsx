@@ -42,10 +42,19 @@ function responseError(data: unknown, fallback: string) {
   return fallback;
 }
 
-function Card({ card, onDelete }: { card: NewsCard; onDelete?: (card: NewsCard) => void }) {
+function Card({
+  card,
+  keywords,
+  onDelete
+}: {
+  card: NewsCard;
+  keywords: string[];
+  onDelete?: (card: NewsCard) => void;
+}) {
   const [copied, setCopied] = useState<"url" | "body" | null>(null);
   const sourceText = card.sources.map((source) => source.source).join("、");
   const bodyText = `${card.title}\n${card.date}\n${card.summary}\n来源：${sourceText}`;
+  const matchedKeywords = keywords.filter((keyword) => `${card.title}\n${card.summary}`.includes(keyword));
 
   async function copy(value: string, type: "url" | "body") {
     await navigator.clipboard.writeText(value);
@@ -88,19 +97,36 @@ function Card({ card, onDelete }: { card: NewsCard; onDelete?: (card: NewsCard) 
         </div>
         <h2>{card.title}</h2>
         <p>{card.summary}</p>
-        <div className="source-list">
-          {card.sources.map((source) => (
-            <a key={`${source.source}-${source.url}`} href={source.url} target="_blank" rel="noreferrer">
-              {source.source}
-            </a>
-          ))}
+        <div className="card-tags">
+          <div className="source-list">
+            {card.sources.map((source) => (
+              <a key={`${source.source}-${source.url}`} href={source.url} target="_blank" rel="noreferrer">
+                {source.source}
+              </a>
+            ))}
+          </div>
+          {matchedKeywords.length > 0 ? (
+            <div className="keyword-tags">
+              {matchedKeywords.map((keyword) => (
+                <span key={keyword}>{keyword}</span>
+              ))}
+            </div>
+          ) : null}
         </div>
       </div>
     </article>
   );
 }
 
-function CardGrid({ cards, onDelete }: { cards: NewsCard[]; onDelete?: (card: NewsCard) => void }) {
+function CardGrid({
+  cards,
+  keywords,
+  onDelete
+}: {
+  cards: NewsCard[];
+  keywords: string[];
+  onDelete?: (card: NewsCard) => void;
+}) {
   if (cards.length === 0) {
     return <div className="empty-state">还没有新闻卡片。点击“开始”后会显示今天和昨天的相关内容。</div>;
   }
@@ -117,7 +143,7 @@ function CardGrid({ cards, onDelete }: { cards: NewsCard[]; onDelete?: (card: Ne
             <h2>产业动向</h2>
             <div className="card-grid">
               {industryCards.map((card) => (
-                <Card key={`${card.id}-${card.primaryUrl}`} card={card} onDelete={onDelete} />
+                <Card key={`${card.id}-${card.primaryUrl}`} card={card} keywords={keywords} onDelete={onDelete} />
               ))}
             </div>
           </section>
@@ -127,7 +153,7 @@ function CardGrid({ cards, onDelete }: { cards: NewsCard[]; onDelete?: (card: Ne
             <h2>宏观地缘</h2>
             <div className="card-grid">
               {macroCards.map((card) => (
-                <Card key={`${card.id}-${card.primaryUrl}`} card={card} onDelete={onDelete} />
+                <Card key={`${card.id}-${card.primaryUrl}`} card={card} keywords={keywords} onDelete={onDelete} />
               ))}
             </div>
           </section>
@@ -139,7 +165,7 @@ function CardGrid({ cards, onDelete }: { cards: NewsCard[]; onDelete?: (card: Ne
   return (
     <section className="card-grid">
       {cards.map((card) => (
-        <Card key={`${card.id}-${card.primaryUrl}`} card={card} onDelete={onDelete} />
+        <Card key={`${card.id}-${card.primaryUrl}`} card={card} keywords={keywords} onDelete={onDelete} />
       ))}
     </section>
   );
@@ -372,7 +398,7 @@ export default function Home() {
             ) : null}
           </section>
 
-          <CardGrid cards={visibleCards} onDelete={removeVisibleCard} />
+          <CardGrid cards={visibleCards} keywords={keywords} onDelete={removeVisibleCard} />
         </>
       ) : (
         <section className="history-view">
@@ -400,7 +426,11 @@ export default function Home() {
                         </button>
                       </div>
                     </div>
-                    <CardGrid cards={item.cards} onDelete={(card) => removeHistoryCard(item.id, card)} />
+                    <CardGrid
+                      cards={item.cards}
+                      keywords={keywords}
+                      onDelete={(card) => removeHistoryCard(item.id, card)}
+                    />
                   </div>
                 ))}
               </section>
