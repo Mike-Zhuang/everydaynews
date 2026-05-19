@@ -12,14 +12,41 @@ type OpenAIArticle = {
 };
 
 const REQUEST_TIMEOUT_MS = 3500;
-const MAX_SOURCES_PER_RUN = 18;
-const MAX_LINKS_PER_SOURCE = 3;
-const MAX_ARTICLE_LINKS_PER_RUN = 36;
+const MAX_TOPICS_PER_RUN = 5;
+const MAX_RESULTS_PER_ENGINE = 5;
+const MAX_ARTICLE_LINKS_PER_RUN = 30;
 const MAX_CANDIDATES_FOR_OPENAI = 24;
+const SITE_FILTERS_PER_QUERY = 4;
 const DEFAULT_OPENAI_BASE_URL = "https://api.gptoai.top";
 const DEFAULT_OPENAI_MODEL = "gpt-5.4";
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36";
+
+type UnionSearchResult = {
+  title: string;
+  url: string;
+  snippet: string;
+  platform: string;
+};
+
+const allowedSourceHosts = MEDIA_SOURCES.map((source) => {
+  try {
+    return new URL(source.url).hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}).filter(Boolean);
+
+const sourceNameByHost = new Map(
+  MEDIA_SOURCES.flatMap((source) => {
+    try {
+      const host = new URL(source.url).hostname.replace(/^www\./, "");
+      return [[host, source.name] as const];
+    } catch {
+      return [];
+    }
+  })
+);
 
 export function dateKey(date: Date) {
   return new Intl.DateTimeFormat("en-CA", {
@@ -81,23 +108,69 @@ function normalizeUrl(href: string, baseUrl: string) {
   }
 }
 
-function extractLinks(html: string, baseUrl: string) {
-  const $ = cheerio.load(html);
-  const links: { title: string; url: string }[] = [];
-  const seen = new Set<string>();
+function cleanSearchUrl(href: string, baseUrl: string) {
+  const url = normalizeUrl(href, baseUrl);
+  if (!url) return null;
 
-  $("a[href]").each((_, element) => {
+  const parsed = new URL(url);
+  const duckTarget = parsed.searchParams.get("uddg");
+  if (duckTarget) return normalizeUrl(duckTarget, baseUrl);
+
+  if (parsed.hostname.includes("bing.com") && parsed.pathname === "/ck/a") {
+    return null;
+  }
+
+  return url;
+}
+
+function isUsableArticleUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^www\./, "");
+    if (!["http:", "https:"].includes(parsed.protocol)) return false;
+    if (/\.(jpg|jpeg|png|gif|webp|svg|pdf|zip|mp4|mp3)$/i.test(parsed.pathname)) return false;
+    if (/google|bing|duckduckgo|baidu|sogou|so\.com|javascript/i.test(parsed.hostname)) return false;
+    return allowedSourceHosts.some((allowed) => host === allowed || host.endsWith(`.${allowed}`));
+  } catch {
+    return false;
+  }
+}
+
+function sourceNameForUrl(url: string, fallback: string) {
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, "");
+    const matched = allowedSourceHosts.find((allowed) => host === allowed || host.endsWith(`.${allowed}`));
+    return matched ? (sourceNameByHost.get(matched) ?? fallback) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function extractSearchLinks(html: string, baseUrl: string, platform: string) {
+  const $ = cheerio.load(html);
+  const links: UnionSearchResult[] = [];
+  const seen = new Set<string>();
+  const selectors =
+    platform === "bing"
+      ? "li.b_algo h2 a[href]"
+      : platform === "duckduckgo"
+        ? ".result h2 a[href], .result__title a[href]"
+        : "a[href]";
+
+  $(selectors).each((_, element) => {
     const href = $(element).attr("href");
     const title = $(element).text().replace(/\s+/g, " ").trim();
     if (!href || title.length < 6) return;
-    const url = normalizeUrl(href, baseUrl);
-    if (!url || seen.has(url)) return;
-    if (/\.(jpg|jpeg|png|gif|webp|svg|pdf|zip)$/i.test(url)) return;
+    const url = cleanSearchUrl(href, baseUrl);
+    if (!url || seen.has(url) || !isUsableArticleUrl(url)) return;
+
+    const item = $(element).closest("li, .result, .b_algo, div");
+    const snippet = item.text().replace(/\s+/g, " ").trim().replace(title, "").slice(0, 260);
     seen.add(url);
-    links.push({ title, url });
+    links.push({ title, url, snippet, platform });
   });
 
-  return links.slice(0, MAX_LINKS_PER_SOURCE);
+  return links.slice(0, MAX_RESULTS_PER_ENGINE);
 }
 
 function parseDate(raw?: string | null) {
@@ -127,7 +200,8 @@ function extractArticle(html: string, fallbackTitle: string, url: string, source
     parseDate($("meta[name='publishdate']").attr("content")) ||
     parseDate($("time[datetime]").first().attr("datetime")) ||
     parseDate($("time").first().text()) ||
-    parseDate($.root().text());
+    parseDate($.root().text()) ||
+    dateKey(new Date());
 
   const paragraphs = $("article p, main p, .article p, .content p, .post p, p")
     .map((_, p) => $(p).text().replace(/\s+/g, " ").trim())
@@ -167,26 +241,91 @@ async function mapConcurrent<T, R>(
 }
 
 export async function collectCandidates(validDates: Set<string>) {
-  const sourcePages = await mapConcurrent(MEDIA_SOURCES.slice(0, MAX_SOURCES_PER_RUN), 8, async (source) => {
-    const html = await fetchHtml(source.url);
-    if (!html) return [];
-    return extractLinks(html, source.url).map((link) => ({ ...link, source: source.name }));
-  });
-
-  const uniqueLinks = new Map<string, { title: string; url: string; source: string }>();
-  sourcePages.flat().forEach((link) => {
+  const searchResults = await unionSearch(Array.from(validDates));
+  const uniqueLinks = new Map<string, UnionSearchResult>();
+  searchResults.forEach((link) => {
     if (!uniqueLinks.has(link.url)) uniqueLinks.set(link.url, link);
   });
 
   const articles = await mapConcurrent(Array.from(uniqueLinks.values()).slice(0, MAX_ARTICLE_LINKS_PER_RUN), 10, async (link) => {
     const html = await fetchHtml(link.url);
     if (!html) return null;
-    const article = extractArticle(html, link.title, link.url, link.source);
+    const article = extractArticle(html, link.title, link.url, sourceNameForUrl(link.url, `${link.platform} search`));
     if (!article || !validDates.has(article.date)) return null;
     return article;
   });
 
   return articles.filter(Boolean).slice(0, MAX_CANDIDATES_FOR_OPENAI) as CandidateArticle[];
+}
+
+function buildUnionQueries(validDates: string[]) {
+  const topics = ["半导体", "机器人", "人工智能", "中国宏观经济", "中国 地缘政治"];
+  const dateTerms = validDates.join(" OR ");
+  const hostGroups: string[][] = [];
+  for (let index = 0; index < allowedSourceHosts.length; index += SITE_FILTERS_PER_QUERY) {
+    hostGroups.push(allowedSourceHosts.slice(index, index + SITE_FILTERS_PER_QUERY));
+  }
+
+  return topics.slice(0, MAX_TOPICS_PER_RUN).flatMap((topic) =>
+    hostGroups.map((hosts) => {
+      const siteFilters = hosts.map((host) => `site:${host}`).join(" OR ");
+      return `${topic} 中国 新闻 (${dateTerms}) (${siteFilters})`;
+    })
+  );
+}
+
+async function searchDuckDuckGo(query: string) {
+  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+  const html = await fetchHtml(url);
+  return html ? extractSearchLinks(html, url, "duckduckgo") : [];
+}
+
+async function searchBing(query: string) {
+  const url = `https://www.bing.com/search?q=${encodeURIComponent(query)}`;
+  const html = await fetchHtml(url);
+  return html ? extractSearchLinks(html, url, "bing") : [];
+}
+
+async function searchJina(query: string) {
+  try {
+    const response = await fetch(`https://s.jina.ai/?q=${encodeURIComponent(query)}`, {
+      headers: {
+        Accept: "application/json",
+        "X-Respond-With": "no-content",
+        "User-Agent": USER_AGENT
+      },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+    });
+    if (!response.ok) return [];
+    const data = await response.json();
+    const items = Array.isArray(data?.data) ? data.data : [];
+    return items.slice(0, MAX_RESULTS_PER_ENGINE).flatMap((item: Record<string, unknown>) => {
+      const title = typeof item.title === "string" ? item.title : "";
+      const url = typeof item.url === "string" ? item.url : "";
+      const snippet = typeof item.description === "string" ? item.description : "";
+      return title && url && isUsableArticleUrl(url)
+        ? [{ title, url, snippet, platform: "jina" }]
+        : [];
+    });
+  } catch {
+    return [];
+  }
+}
+
+async function unionSearch(validDates: string[]) {
+  const queries = buildUnionQueries(validDates);
+  const batches = await Promise.all(
+    queries.map(async (query) => {
+      const results = await Promise.allSettled([
+        searchDuckDuckGo(query),
+        searchBing(query),
+        searchJina(query)
+      ]);
+      return results.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
+    })
+  );
+
+  return batches.flat();
 }
 
 export function candidatesToCards(candidates: CandidateArticle[]): NewsCard[] {
