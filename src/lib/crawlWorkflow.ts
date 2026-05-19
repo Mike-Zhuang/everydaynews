@@ -12,7 +12,10 @@ type OpenAIArticle = {
 };
 
 const REQUEST_TIMEOUT_MS = 3500;
-const MAX_TOPICS_PER_RUN = 5;
+const MAX_SOURCES_PER_RUN = 28;
+const MAX_LINKS_PER_SOURCE = 4;
+const MAX_TOPICS_PER_RUN = 3;
+const MAX_HOST_GROUPS_PER_RUN = 5;
 const MAX_RESULTS_PER_ENGINE = 5;
 const MAX_ARTICLE_LINKS_PER_RUN = 30;
 const MAX_CANDIDATES_FOR_OPENAI = 24;
@@ -173,6 +176,24 @@ function extractSearchLinks(html: string, baseUrl: string, platform: string) {
   return links.slice(0, MAX_RESULTS_PER_ENGINE);
 }
 
+function extractMediaPageLinks(html: string, baseUrl: string, source: string) {
+  const $ = cheerio.load(html);
+  const links: UnionSearchResult[] = [];
+  const seen = new Set<string>();
+
+  $("a[href]").each((_, element) => {
+    const href = $(element).attr("href");
+    const title = $(element).text().replace(/\s+/g, " ").trim();
+    if (!href || title.length < 6) return;
+    const url = normalizeUrl(href, baseUrl);
+    if (!url || seen.has(url) || !isUsableArticleUrl(url)) return;
+    seen.add(url);
+    links.push({ title, url, snippet: "", platform: source });
+  });
+
+  return links.slice(0, MAX_LINKS_PER_SOURCE);
+}
+
 function parseDate(raw?: string | null) {
   if (!raw) return null;
   const clean = raw.replace(/\s+/g, " ").trim();
@@ -241,7 +262,10 @@ async function mapConcurrent<T, R>(
 }
 
 export async function collectCandidates(validDates: Set<string>) {
-  const searchResults = await unionSearch(Array.from(validDates));
+  const directResults = await crawlConfiguredMediaPages();
+  const searchResults = directResults.length >= 12
+    ? directResults
+    : [...directResults, ...(await unionSearch(Array.from(validDates)))];
   const uniqueLinks = new Map<string, UnionSearchResult>();
   searchResults.forEach((link) => {
     if (!uniqueLinks.has(link.url)) uniqueLinks.set(link.url, link);
@@ -258,6 +282,16 @@ export async function collectCandidates(validDates: Set<string>) {
   return articles.filter(Boolean).slice(0, MAX_CANDIDATES_FOR_OPENAI) as CandidateArticle[];
 }
 
+async function crawlConfiguredMediaPages() {
+  const sourcePages = await mapConcurrent(MEDIA_SOURCES.slice(0, MAX_SOURCES_PER_RUN), 8, async (source) => {
+    const html = await fetchHtml(source.url);
+    if (!html) return [];
+    return extractMediaPageLinks(html, source.url, source.name);
+  });
+
+  return sourcePages.flat();
+}
+
 function buildUnionQueries(validDates: string[]) {
   const topics = ["半导体", "机器人", "人工智能", "中国宏观经济", "中国 地缘政治"];
   const dateTerms = validDates.join(" OR ");
@@ -267,7 +301,7 @@ function buildUnionQueries(validDates: string[]) {
   }
 
   return topics.slice(0, MAX_TOPICS_PER_RUN).flatMap((topic) =>
-    hostGroups.map((hosts) => {
+    hostGroups.slice(0, MAX_HOST_GROUPS_PER_RUN).map((hosts) => {
       const siteFilters = hosts.map((host) => `site:${host}`).join(" OR ");
       return `${topic} 中国 新闻 (${dateTerms}) (${siteFilters})`;
     })

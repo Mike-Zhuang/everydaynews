@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Clock3, Copy, Moon, Plus, Sun, X } from "lucide-react";
+import { ArrowUpRight, Check, Clock3, Copy, Moon, Plus, Sun, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { DEFAULT_KEYWORDS } from "@/lib/mediaSources";
 import type { CandidateArticle, CrawlResponse, NewsCard } from "@/lib/types";
@@ -42,7 +42,7 @@ function responseError(data: unknown, fallback: string) {
   return fallback;
 }
 
-function Card({ card }: { card: NewsCard }) {
+function Card({ card, onDelete }: { card: NewsCard; onDelete?: (card: NewsCard) => void }) {
   const [copied, setCopied] = useState<"url" | "body" | null>(null);
   const sourceText = card.sources.map((source) => source.source).join("、");
   const bodyText = `${card.title}\n${card.date}\n${card.summary}\n来源：${sourceText}`;
@@ -56,10 +56,20 @@ function Card({ card }: { card: NewsCard }) {
   return (
     <article className="news-card">
       <div className="browser-bar">
-        <div className="traffic-lights" aria-hidden="true">
+        <div className="traffic-lights">
+          <button
+            className="window-dot close-dot"
+            onClick={() => onDelete?.(card)}
+            disabled={!onDelete}
+            title="删除这条新闻"
+            type="button"
+          >
+            <X size={9} />
+          </button>
           <span />
-          <span />
-          <span />
+          <a className="window-dot open-dot" href={card.primaryUrl} target="_blank" rel="noreferrer" title="打开原文">
+            <ArrowUpRight size={9} />
+          </a>
         </div>
         <a className="url-pill" href={card.primaryUrl} target="_blank" rel="noreferrer">
           {card.primaryUrl}
@@ -90,7 +100,7 @@ function Card({ card }: { card: NewsCard }) {
   );
 }
 
-function CardGrid({ cards }: { cards: NewsCard[] }) {
+function CardGrid({ cards, onDelete }: { cards: NewsCard[]; onDelete?: (card: NewsCard) => void }) {
   if (cards.length === 0) {
     return <div className="empty-state">还没有新闻卡片。点击“开始”后会显示今天和昨天的相关内容。</div>;
   }
@@ -98,7 +108,7 @@ function CardGrid({ cards }: { cards: NewsCard[] }) {
   return (
     <section className="card-grid">
       {cards.map((card) => (
-        <Card key={`${card.id}-${card.primaryUrl}`} card={card} />
+        <Card key={`${card.id}-${card.primaryUrl}`} card={card} onDelete={onDelete} />
       ))}
     </section>
   );
@@ -145,6 +155,40 @@ export default function Home() {
   function persistHistory(next: HistoryItem[]) {
     setHistory(next);
     localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
+  }
+
+  function sameCard(left: NewsCard, right: NewsCard) {
+    return left.primaryUrl === right.primaryUrl || left.id === right.id;
+  }
+
+  function removeVisibleCard(card: NewsCard) {
+    setPreviewCards((cards) => cards.filter((item) => !sameCard(item, card)));
+    if (!result) return;
+
+    const nextResult = {
+      ...result,
+      cards: result.cards.filter((item) => !sameCard(item, card))
+    };
+    setResult(nextResult);
+    persistHistory(
+      history.map((item) =>
+        item.generatedAt === result.generatedAt
+          ? { ...item, cards: item.cards.filter((historyCard) => !sameCard(historyCard, card)) }
+          : item
+      )
+    );
+  }
+
+  function removeHistoryRun(id: string) {
+    persistHistory(history.filter((item) => item.id !== id));
+  }
+
+  function removeHistoryCard(runId: string, card: NewsCard) {
+    persistHistory(
+      history.map((item) =>
+        item.id === runId ? { ...item, cards: item.cards.filter((historyCard) => !sameCard(historyCard, card)) } : item
+      )
+    );
   }
 
   function addKeyword() {
@@ -273,7 +317,7 @@ export default function Home() {
             ) : null}
           </section>
 
-          <CardGrid cards={visibleCards} />
+          <CardGrid cards={visibleCards} onDelete={removeVisibleCard} />
         </>
       ) : (
         <section className="history-view">
@@ -293,9 +337,15 @@ export default function Home() {
                   <div className="history-run" key={item.id}>
                     <div className="run-title">
                       <span>{formatTime(item.generatedAt)}</span>
-                      <span>{item.cards.length} 张卡片</span>
+                      <div className="run-actions">
+                        <span>{item.cards.length} 张卡片</span>
+                        <button className="text-button danger compact" onClick={() => removeHistoryRun(item.id)}>
+                          <Trash2 size={15} />
+                          删除本次
+                        </button>
+                      </div>
                     </div>
-                    <CardGrid cards={item.cards} />
+                    <CardGrid cards={item.cards} onDelete={(card) => removeHistoryCard(item.id, card)} />
                   </div>
                 ))}
               </section>

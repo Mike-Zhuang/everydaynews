@@ -104,6 +104,15 @@ a {
   border-radius: 999px;
 }
 
+.text-button.compact {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
 .text-button.danger {
   color: var(--danger);
 }
@@ -236,22 +245,47 @@ a {
   gap: 7px;
 }
 
-.traffic-lights span {
+.traffic-lights span,
+.window-dot {
   width: 11px;
   height: 11px;
   border-radius: 50%;
 }
 
-.traffic-lights span:nth-child(1) {
+.window-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  color: rgba(0, 0, 0, 0.62);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.window-dot svg {
+  opacity: 0;
+  transition: opacity 0.14s ease;
+}
+
+.news-card:hover .window-dot svg {
+  opacity: 1;
+}
+
+.close-dot {
   background: #ff5f57;
 }
 
-.traffic-lights span:nth-child(2) {
+.traffic-lights span {
   background: #ffbd2e;
 }
 
-.traffic-lights span:nth-child(3) {
+.open-dot {
   background: #28c840;
+}
+
+.window-dot:disabled {
+  cursor: default;
 }
 
 .url-pill {
@@ -374,6 +408,12 @@ a {
 .run-title {
   margin-bottom: 12px;
   color: var(--muted);
+}
+
+.run-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
 }
 
 @media (max-width: 820px) {
