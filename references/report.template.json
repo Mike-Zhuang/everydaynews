@@ -1,0 +1,14 @@
+{
+  "run_id": "00000000-0000-0000-0000-000000000000",
+  "date": "2026-01-01",
+  "timezone": "America/Los_Angeles",
+  "title": "每日前沿情报｜2026-01-01",
+  "tldr": "TL;DR：三条最值得关注的变化。",
+  "top_items": [
+    {"content_hash":"from-manifest-1","title":"标题一","url":"original-url-from-manifest","fact":"可核验事实","why_it_matters":"为何重要","uncertainty":"未知和边界","confidence":"high","high_stakes":true,"additional_sources":[{"name":"独立权威来源","url":"https://independent.example/evidence","role":"corroboration","publisher_id":"stable-independent-publisher-id","retrieved_at":"timezone-aware-ISO-8601-retrieval-time"}]},
+    {"content_hash":"from-manifest-2","title":"标题二","url":"original-url-from-manifest","fact":"可核验事实","why_it_matters":"为何重要","uncertainty":"未知和边界","confidence":"medium","high_stakes":false,"additional_sources":[]},
+    {"content_hash":"from-manifest-3","title":"标题三","url":"original-url-from-manifest","fact":"可核验事实","why_it_matters":"为何重要","uncertainty":"未知和边界","confidence":"medium","high_stakes":false,"additional_sources":[]}
+  ],
+  "radar": ["一句话弱信号"],
+  "source_health_summary": "成功源、空源与失败源的简短说明。"
+}

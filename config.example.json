@@ -1,0 +1,6 @@
+{
+  "notion_database_id": "replace-with-database-id",
+  "notion_data_source_id": "replace-with-data-source-id",
+  "timezone": "Area/City",
+  "state_db": "/replace/with/private/runtime/state.sqlite3"
+}
